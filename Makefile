@@ -1,3 +1,4 @@
+MAKEFILE_PATH := $(abspath $(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 # Colors
 GREEN_COLOR   = "\033[0;32m"
 PURPLE_COLOR  = "\033[0;35m"
@@ -10,10 +11,14 @@ help: ## This help message
 	@awk 'BEGIN {FS = ":.*##"; printf "\n\n"} /^[a-zA-Z_-]+:.*?##/ { printf "    \033[36m%-17s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
 	@printf "\nTargets run by default are: clean format lint vet coverage test.\n"
 
-deps: ## Download reqired dependencies and remove unused.
+deps: ## Download required dependencies and remove unused.
 	@echo -e $(GREEN_COLOR)[RESOLVE DEPENDENCIES]$(DEFAULT_COLOR)
 	go mod tidy
 
 update: ## Update dependencies.
 	@echo -e $(GREEN_COLOR)[UPDATE DEPENDENCIES]$(DEFAULT_COLOR)
 	go get -u ./v1
+
+lint:
+	@echo -e $(GREEN_COLOR)[LINT]$(DEFAULT_COLOR)
+	@golangci-lint run --config=$(MAKEFILE_PATH)/.golangci.yml

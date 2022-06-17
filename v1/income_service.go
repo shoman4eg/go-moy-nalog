@@ -3,11 +3,12 @@ package moynalog
 import (
 	"context"
 	"encoding/json"
-	"github.com/pkg/errors"
-	"github.com/shopspring/decimal"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/pkg/errors"
+	"github.com/shopspring/decimal"
 )
 
 type IncomeCreateService struct {
@@ -41,7 +42,7 @@ type incomeServiceItem struct {
 }
 
 type IncomeResponse struct {
-	ApprovedReceiptUuid string `json:"approvedReceiptUuid"`
+	ApprovedReceiptUUID string `json:"approvedReceiptUuid"`
 }
 
 func (s *IncomeCreateService) AddItem(name string, amount decimal.Decimal, quantity int64) *IncomeCreateService {

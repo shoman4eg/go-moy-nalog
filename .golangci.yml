@@ -5,6 +5,8 @@ run:
   tests: false
 
 linters-settings:
+  unused:
+    check-exported: true
   depguard:
     list-type: blacklist
     include-go-root: true
@@ -12,7 +14,7 @@ linters-settings:
       - errors
   goimports:
     local-prefixes: github.com/shoman4eg/go-moy-nalog
-govet:
+  govet:
     check-shadowing: true
   golint:
     min-confidence: 0
@@ -22,23 +24,35 @@ govet:
     check-exported: true
 
 linters:
+  disable-all: true
   enable:
-  - depguard
-  - errcheck
-  - gocritic
-  - gocyclo
-  - gofmt
-  - goimports
-  - revive
-  - gosec
-  - govet
-  - ineffassign
-  - interfacer
-  - misspell
-  - nakedret
-  - prealloc
-  - exportloopref
-  - staticcheck
-  - stylecheck
-  - unconvert
-  - unparam
+    - depguard
+    - errcheck
+    - gocritic
+    - gocyclo
+    - gofmt
+    - goimports
+    - revive
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - nakedret
+    - prealloc
+    - exportloopref
+    - staticcheck
+    - stylecheck
+    - unconvert
+    - unparam
+    - bodyclose
+    - deadcode
+    - dogsled
+    - dupl
+    - funlen
+    - gochecknoinits
+    - goconst
+    - gosimple
+    - noctx
+    - structcheck
+    - typecheck
+    - whitespace

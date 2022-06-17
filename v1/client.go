@@ -13,7 +13,6 @@ import (
 type Client struct {
 	AccessToken string
 	BaseURL     string
-	UserAgent   string
 	HTTPClient  *http.Client
 	Debug       bool
 	Logger      logger
@@ -42,7 +41,6 @@ var authHeaders = map[string]string{
 func NewClient() *Client {
 	client := &Client{
 		BaseURL:    baseAPIMainURL,
-		UserAgent:  UserAgent,
 		HTTPClient: http.DefaultClient,
 	}
 
@@ -88,6 +86,7 @@ func (c *Client) parseRequest(r *request, opts ...RequestOption) (err error) {
 	if r.json != nil {
 		jsonString, _ := json.Marshal(r.json)
 		c.debug("json: %v", r.json)
+
 		body = bytes.NewBuffer(jsonString)
 	}
 
