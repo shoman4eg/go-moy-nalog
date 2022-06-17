@@ -1,0 +1,44 @@
+run:
+  concurrency: 8
+  deadline: 10m
+  issues-exit-code: 1
+  tests: false
+
+linters-settings:
+  depguard:
+    list-type: blacklist
+    include-go-root: true
+    packages:
+      - errors
+  goimports:
+    local-prefixes: github.com/shoman4eg/go-moy-nalog
+govet:
+    check-shadowing: true
+  golint:
+    min-confidence: 0
+  gocyclo:
+    min-complexity: 15
+  unparam:
+    check-exported: true
+
+linters:
+  enable:
+  - depguard
+  - errcheck
+  - gocritic
+  - gocyclo
+  - gofmt
+  - goimports
+  - revive
+  - gosec
+  - govet
+  - ineffassign
+  - interfacer
+  - misspell
+  - nakedret
+  - prealloc
+  - exportloopref
+  - staticcheck
+  - stylecheck
+  - unconvert
+  - unparam
