@@ -10,7 +10,7 @@ const (
 	SourceType string = "WEB"
 	AppVersion string = "1.0.0"
 
-	deviceIDLen int = 21
+	DeviceIDLen int = 21
 )
 
 type DeviceInfo struct {
@@ -38,8 +38,8 @@ func generateDeviceID() string {
 		log.Fatal(err)
 	}
 
-	if len(id) > deviceIDLen {
-		return id[:deviceIDLen]
+	if len(id) > 21 {
+		return id[:DeviceIDLen]
 	}
 
 	return id
