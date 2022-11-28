@@ -5,163 +5,266 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
-)
+	"net/url"
+	"strings"
+	"sync"
+	"time"
 
-// Client Define API client
-type Client struct {
-	AccessToken string
-	BaseURL     string
-	HTTPClient  *http.Client
-	Debug       bool
-	Logger      logger
-	do          doFunc
-}
-type doFunc func(req *http.Request) (*http.Response, error)
-type logger func(format string, v ...interface{})
+	"github.com/pkg/errors"
+)
 
 const (
-	baseAPIMainURL string = "https://lknpd.nalog.ru/api/v1"
+	defaultBaseURL = "https://lknpd.nalog.ru/api"
+	baseAPIVersion = "v1"
+
+	defaultUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 11_2_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/88.0.4324.192 Safari/537.36"
 )
 
-var defaultHeaders = map[string]string{
-	"User-Agent":      UserAgent,
-	"Content-type":    "application/json",
-	"Accept":          "application/json, text/plain, */*",
-	"Accept-language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+var (
+	errNonNilContext      = errors.New("context must be non-nil")
+	errAccessTokenIsEmpty = errors.New("access token cannot be null")
+)
+
+type Client struct {
+	clientMu  sync.Mutex
+	client    *http.Client
+	BaseURL   *url.URL
+	UserAgent string
+
+	AccessToken *AccessToken
+
+	common service
+
+	Auth   *AuthSerive
+	Users  *UsersService
+	Income *IncomeService
 }
 
-var authHeaders = map[string]string{
-	"Referrer":        "https://lknpd.nalog.ru/",
-	"Referrer-Policy": "strict-origin-when-cross-origin",
+type service struct {
+	client *Client
 }
 
-// NewClient Create new http client
-func NewClient() *Client {
-	client := &Client{
-		BaseURL:    baseAPIMainURL,
-		HTTPClient: http.DefaultClient,
+func (c *Client) Client() *http.Client {
+	c.clientMu.Lock()
+	defer c.clientMu.Unlock()
+	clientCopy := *c.client
+	return &clientCopy
+}
+
+type LimitOptions struct {
+	Limit  int    `url:"limit,omitempty"`
+	Offset int    `url:"offset,omitempty"`
+	SortBy string `url:"sortBy,omitempty"`
+}
+
+type DateRangeOptions struct {
+	From time.Time `url:"from,omitempty"`
+	To   time.Time `url:"to,omitempty"`
+}
+
+func NewClient(httpClient *http.Client) *Client {
+	return NewClientWithVersion(httpClient, baseAPIVersion)
+}
+
+func NewClientWithVersion(httpClient *http.Client, version string) *Client {
+	if httpClient == nil {
+		httpClient = &http.Client{}
 	}
 
-	return client
-}
+	baseURL, _ := url.Parse(fmt.Sprintf("%s/%s/", defaultBaseURL, version))
 
-// WithLogger add logger
-func (c *Client) WithLogger(l logger) *Client {
-	c.Logger = l
+	c := &Client{client: httpClient, BaseURL: baseURL, UserAgent: defaultUserAgent}
+
+	c.common.client = c
+
+	c.Auth = (*AuthSerive)(&c.common)
+	c.Users = (*UsersService)(&c.common)
+	c.Income = (*IncomeService)(&c.common)
+
 	return c
 }
 
-// debug Put data in log
-func (c *Client) debug(format string, v ...interface{}) {
-	if !c.Debug || c.Logger == nil {
-		return
+func (c *Client) NewRequestWithAuth(method, urlStr string, body interface{}) (*http.Request, error) {
+	req, err := c.NewRequest(method, urlStr, body)
+	if err != nil {
+		return nil, err
 	}
+	if c.AccessToken == nil {
+		return nil, errAccessTokenIsEmpty
+	}
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %v", c.AccessToken.Token))
 
-	c.Logger(format, v...)
+	return req, nil
 }
 
-func (c *Client) parseRequest(r *request, opts ...RequestOption) (err error) {
-	for _, opt := range opts {
-		opt(r)
+func (c *Client) NewRequest(method, urlStr string, body interface{}) (*http.Request, error) {
+	if !strings.HasSuffix(c.BaseURL.Path, "/") {
+		return nil, fmt.Errorf("BaseURL must have a trailing slash, but %q does not", c.BaseURL)
 	}
-	err = r.validate()
+
+	u, err := c.BaseURL.Parse(urlStr)
 	if err != nil {
-		return err
-	}
-	fullURL := fmt.Sprintf("%s%s", c.BaseURL, r.endpoint)
-
-	queryString := r.query.Encode()
-	body := &bytes.Buffer{}
-	header := http.Header{}
-	if r.header != nil {
-		header = r.header.Clone()
+		return nil, err
 	}
 
-	for headerName, headerValue := range defaultHeaders {
-		header.Set(headerName, headerValue)
-	}
-
-	if r.json != nil {
-		jsonString, _ := json.Marshal(r.json)
-		c.debug("json: %v", r.json)
-
-		body = bytes.NewBuffer(jsonString)
-	}
-
-	if c.AccessToken != "" {
-		header.Set("Authorization", fmt.Sprintf("%s %s", "Bearer", c.AccessToken))
-	} else {
-		for headerName, headerValue := range authHeaders {
-			header.Set(headerName, headerValue)
+	var buf io.ReadWriter
+	if body != nil {
+		buf = &bytes.Buffer{}
+		enc := json.NewEncoder(buf)
+		enc.SetEscapeHTML(false)
+		if err := enc.Encode(body); err != nil {
+			return nil, err
 		}
 	}
 
-	if queryString != "" {
-		fullURL = fmt.Sprintf("%s?%s", fullURL, queryString)
+	req, err := http.NewRequest(method, u.String(), buf)
+	if err != nil {
+		return nil, err
 	}
 
-	r.fullURL = fullURL
-	r.header = header
-	r.body = body
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("Accept-language", "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7")
+	if c.UserAgent != "" {
+		req.Header.Set("User-Agent", c.UserAgent)
+	}
+
+	return req, nil
+}
+
+type Response struct {
+	*http.Response
+}
+
+func newResponse(r *http.Response) *Response {
+	response := &Response{Response: r}
+	return response
+}
+
+type Error struct {
+	Code           string `json:"code"`
+	Message        string `json:"message"`
+	AdditionalInfo any    `json:"additionalInfo"`
+}
+
+func (e *Error) Error() string {
+	return fmt.Sprintf("%v error caused with %v message and %v additionalInfo",
+		e.Code, e.Message, e.AdditionalInfo)
+}
+
+func (e *Error) UnmarshalJSON(data []byte) error {
+	type aliasError Error // avoid infinite recursion by using type alias.
+	if err := json.Unmarshal(data, (*aliasError)(e)); err != nil {
+		return json.Unmarshal(data, &e.Message) // data can be json string.
+	}
 	return nil
 }
 
-func (c *Client) callAPI(ctx context.Context, r *request, opts ...RequestOption) (data []byte, err error) {
-	err = c.parseRequest(r, opts...)
+type ErrorResponse struct {
+	Response *http.Response // HTTP response that caused this error
+	Message  string         `json:"message"` // error message
+	Code     string         `json:"code"`    // error message
+}
+
+func (r *ErrorResponse) Error() string {
+	return fmt.Sprintf("%v %v: %d %v %+v",
+		r.Response.Request.Method, r.Response.Request.URL,
+		r.Response.StatusCode, r.Message, r.Code)
+}
+
+// BareDo sends an API request and lets you handle the api response. If an error
+// or API Error occurs, the error will contain more information. Otherwise, you
+// are supposed to read and close the response's Body. If rate limit is exceeded
+// and reset time is in the future, BareDo returns *RateLimitError immediately
+// without making a network API call.
+//
+// The provided ctx must be non-nil, if it is nil an error is returned. If it is
+// canceled or times out, ctx.Err() will be returned.
+func (c *Client) BareDo(ctx context.Context, req *http.Request) (*Response, error) {
+	if ctx == nil {
+		return nil, errNonNilContext
+	}
+
+	req.WithContext(ctx)
+
+	resp, err := c.client.Do(req)
 	if err != nil {
-		return []byte{}, err
-	}
-	req, err := http.NewRequest(r.method, r.fullURL, r.body)
-	if err != nil {
-		return []byte{}, err
-	}
-	req = req.WithContext(ctx)
-	req.Header = r.header
-	c.debug("request: %#v", req)
-	f := c.do
-	if f == nil {
-		f = c.HTTPClient.Do
-	}
-	res, err := f(req)
-	if err != nil {
-		return []byte{}, err
-	}
-	data, err = ioutil.ReadAll(res.Body)
-	if err != nil {
-		return []byte{}, err
-	}
-	defer func() {
-		cerr := res.Body.Close()
-		if err == nil && cerr != nil {
-			err = cerr
+		// If we got an error, and the context has been canceled,
+		// the context's error is probably more useful.
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
 		}
-	}()
-	c.debug("response: %#v", res)
-	c.debug("response body: %#v", string(data))
-	c.debug("response status code: %#v", res.StatusCode)
 
-	if res.StatusCode >= http.StatusBadRequest {
-		apiErr := &APIError{
-			Code:    int64(res.StatusCode),
-			Message: string(data),
+		// If the error type is *url.Error, sanitize its URL before returning.
+		if e, ok := err.(*url.Error); ok {
+			if url, err := url.Parse(e.URL); err == nil {
+				e.URL = url.String()
+				return nil, e
+			}
 		}
-		return nil, apiErr
+
+		return nil, err
 	}
 
-	return data, nil
+	response := newResponse(resp)
+
+	err = CheckResponse(resp)
+	if err != nil {
+		defer resp.Body.Close()
+	}
+	return response, err
 }
 
-func (c *Client) CreateNewAccessToken(username, password string) {
+// Do sends an API request and returns the API response. The API response is
+// JSON decoded and stored in the value pointed to by v, or returned as an
+// error if an API error has occurred. If v implements the io.Writer interface,
+// the raw response body will be written to v, without attempting to first
+// decode it. If v is nil, and no error hapens, the response is returned as is.
+// If rate limit is exceeded and reset time is in the future, Do returns
+// *RateLimitError immediately without making a network API call.
+//
+// The provided ctx must be non-nil, if it is nil an error is returned. If it
+// is canceled or times out, ctx.Err() will be returned.
+func (c *Client) Do(ctx context.Context, req *http.Request, v interface{}) (*Response, error) {
+	resp, err := c.BareDo(ctx, req)
+	if err != nil {
+		return resp, err
+	}
+	defer resp.Body.Close()
 
+	switch v := v.(type) {
+	case nil:
+	case io.Writer:
+		_, err = io.Copy(v, resp.Body)
+	default:
+		decErr := json.NewDecoder(resp.Body).Decode(v)
+		if decErr == io.EOF {
+			decErr = nil // ignore EOF errors caused by empty response body
+		}
+		if decErr != nil {
+			err = decErr
+		}
+	}
+	return resp, err
 }
 
-func (c *Client) Authenticate(accessToken string) {
-	c.AccessToken = accessToken
-}
+func CheckResponse(r *http.Response) error {
+	if c := r.StatusCode; 200 <= c && c <= 299 {
+		return nil
+	}
 
-// NewIncomeCreateService Init Income create Service
-func (c *Client) NewIncomeCreateService() *IncomeCreateService {
-	return &IncomeCreateService{c: c}
+	errorResponse := &ErrorResponse{Response: r}
+	data, err := io.ReadAll(r.Body)
+	if err != nil && data != nil {
+		json.Unmarshal(data, errorResponse)
+	}
+
+	return errorResponse
 }

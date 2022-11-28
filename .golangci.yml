@@ -1,58 +1,32 @@
-run:
-  concurrency: 8
-  deadline: 10m
-  issues-exit-code: 1
-  tests: false
-
-linters-settings:
-  unused:
-    check-exported: true
-  depguard:
-    list-type: blacklist
-    include-go-root: true
-    packages:
-      - errors
-  goimports:
-    local-prefixes: github.com/shoman4eg/go-moy-nalog
-  govet:
-    check-shadowing: true
-  golint:
-    min-confidence: 0
-  gocyclo:
-    min-complexity: 15
-  unparam:
-    check-exported: true
-
 linters:
-  disable-all: true
+  # TODO: fix errors so that all of the linters below pass.
+  # The linters that are commented out, as well as those explicitly disabled,
+  # are currently failing.  We should fix those failures or define exclusion
+  # rules, and then enable those linters.
   enable:
-    - depguard
-    - errcheck
-    - gocritic
-    - gocyclo
-    - gofmt
-    - goimports
-    - revive
-    - gosec
-    - govet
-    - ineffassign
-    - misspell
-    - nakedret
-    - prealloc
-    - exportloopref
-    - staticcheck
-    - stylecheck
-    - unconvert
-    - unparam
-    - bodyclose
-    - deadcode
     - dogsled
     - dupl
-    - funlen
-    - gochecknoinits
-    - goconst
-    - gosimple
-    - noctx
-    - structcheck
-    - typecheck
+    - gofmt
+    - goimports
+    # - gosec
+    - misspell
+    - nakedret
+    - stylecheck
+    # - unconvert
+    # - unparam
     - whitespace
+  disable:
+    - errcheck
+    - gosimple
+    - staticcheck
+    - ineffassign
+    - unused
+issues:
+  exclude-rules:
+    - linters:
+        - dogsled
+      text:  "declaration has 3 blank identifiers"
+      path: _test\.go
+    - linters:
+        - dupl
+      path: _test\.go

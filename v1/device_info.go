@@ -1,9 +1,16 @@
 package moynalog
 
+import (
+	"log"
+
+	"github.com/denisbrodbeck/machineid"
+)
+
 const (
-	UserAgent  string = "Mozilla/5.0 (Macintosh; Intel Mac OS X 11_2_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/88.0.4324.192 Safari/537.36"
 	SourceType string = "WEB"
 	AppVersion string = "1.0.0"
+
+	DeviceIDLen int = 21
 )
 
 type DeviceInfo struct {
@@ -22,6 +29,18 @@ func NewDeviceInfo(deviceID string) *DeviceInfo {
 		AppVersion: AppVersion,
 	}
 
-	deviceInfo.MetaDetails.UserAgent = UserAgent
 	return deviceInfo
+}
+
+func generateDeviceID() string {
+	id, err := machineid.ProtectedID("go-moy-nalog")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if len(id) > 21 {
+		return id[:DeviceIDLen]
+	}
+
+	return id
 }
