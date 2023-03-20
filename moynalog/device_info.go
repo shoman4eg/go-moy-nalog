@@ -38,7 +38,7 @@ func generateDeviceID() string {
 		log.Fatal(err)
 	}
 
-	if len(id) > 21 {
+	if len(id) > DeviceIDLen {
 		return id[:DeviceIDLen]
 	}
 
