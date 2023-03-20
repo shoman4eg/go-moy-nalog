@@ -101,7 +101,7 @@ func (c *Client) NewRequestWithAuth(method, urlStr string, body interface{}) (*h
 
 func (c *Client) NewRequest(method, urlStr string, body interface{}) (*http.Request, error) {
 	if !strings.HasSuffix(c.BaseURL.Path, "/") {
-		return nil, fmt.Errorf("BaseURL must have a trailing slash, but %q does not", c.BaseURL)
+		return nil, errors.Errorf("BaseURL must have a trailing slash, but %q does not", c.BaseURL)
 	}
 
 	u, err := c.BaseURL.Parse(urlStr)
@@ -153,8 +153,7 @@ type Error struct {
 }
 
 func (e *Error) Error() string {
-	return fmt.Sprintf("%v error caused with %v message and %v additionalInfo",
-		e.Code, e.Message, e.AdditionalInfo)
+	return fmt.Sprintf("%v error caused with %v message and %v additionalInfo", e.Code, e.Message, e.AdditionalInfo)
 }
 
 func (e *Error) UnmarshalJSON(data []byte) error {
@@ -204,8 +203,8 @@ func (c *Client) BareDo(ctx context.Context, req *http.Request) (*Response, erro
 
 		// If the error type is *url.Error, sanitize its URL before returning.
 		if e, ok := err.(*url.Error); ok {
-			if url, err := url.Parse(e.URL); err == nil {
-				e.URL = url.String()
+			if uri, err := url.Parse(e.URL); err == nil {
+				e.URL = uri.String()
 				return nil, e
 			}
 		}
@@ -263,7 +262,9 @@ func CheckResponse(r *http.Response) error {
 	errorResponse := &ErrorResponse{Response: r}
 	data, err := io.ReadAll(r.Body)
 	if err != nil && data != nil {
-		json.Unmarshal(data, errorResponse)
+		if err0 := json.Unmarshal(data, errorResponse); err0 != nil {
+			return err0
+		}
 	}
 
 	return errorResponse
