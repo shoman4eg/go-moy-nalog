@@ -51,6 +51,3 @@ func (s *AuthSerive) CreateAccessToken(ctx context.Context, username, password s
 
 	return atResp, resp, err
 }
-
-func (s *AuthSerive) CreatePhoneChallenge(phone string) {
-}

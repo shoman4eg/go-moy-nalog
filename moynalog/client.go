@@ -37,9 +37,10 @@ type Client struct {
 
 	common service
 
-	Auth   *AuthSerive
-	Users  *UsersService
-	Income *IncomeService
+	Auth    *AuthSerive
+	Users   *UsersService
+	Income  *IncomeService
+	Receipt *ReceiptService
 }
 
 type service struct {
@@ -68,6 +69,11 @@ func NewClient(httpClient *http.Client) *Client {
 	return NewClientWithVersion(httpClient, baseAPIVersion)
 }
 
+func NewAuthClient(token *AccessToken) *Client {
+	bc := BearerTokenTransport{Token: token}
+	return NewClient(bc.Client())
+}
+
 func NewClientWithVersion(httpClient *http.Client, version string) *Client {
 	if httpClient == nil {
 		httpClient = &http.Client{}
@@ -82,21 +88,9 @@ func NewClientWithVersion(httpClient *http.Client, version string) *Client {
 	c.Auth = (*AuthSerive)(&c.common)
 	c.Users = (*UsersService)(&c.common)
 	c.Income = (*IncomeService)(&c.common)
+	c.Receipt = (*ReceiptService)(&c.common)
 
 	return c
-}
-
-func (c *Client) NewRequestWithAuth(method, urlStr string, body interface{}) (*http.Request, error) {
-	req, err := c.NewRequest(method, urlStr, body)
-	if err != nil {
-		return nil, err
-	}
-	if c.AccessToken == nil {
-		return nil, errAccessTokenIsEmpty
-	}
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %v", c.AccessToken.Token))
-
-	return req, nil
 }
 
 func (c *Client) NewRequest(method, urlStr string, body interface{}) (*http.Request, error) {
@@ -268,4 +262,47 @@ func CheckResponse(r *http.Response) error {
 	}
 
 	return errorResponse
+}
+
+type BearerTokenTransport struct {
+	Token *AccessToken
+	// Transport is the underlying HTTP transport to use when making requests.
+	// It will default to http.DefaultTransport if nil.
+	Transport http.RoundTripper
+}
+
+// RoundTrip implements the RoundTripper interface.
+func (t *BearerTokenTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return t.transport().RoundTrip(setBearerTokenHeader(req, t.Token))
+}
+
+func setBearerTokenHeader(req *http.Request, token *AccessToken) *http.Request {
+	// To set extra headers, we must make a copy of the Request so
+	// that we don't modify the Request we were given. This is required by the
+	// specification of http.RoundTripper.
+	//
+	// Since we are going to modify only req.Header here, we only need a deep copy
+	// of req.Header.
+	convertedRequest := new(http.Request)
+	*convertedRequest = *req
+	convertedRequest.Header = make(http.Header, len(req.Header))
+
+	for k, s := range req.Header {
+		convertedRequest.Header[k] = append([]string(nil), s...)
+	}
+	convertedRequest.Header.Set("Authorization", fmt.Sprintf("Bearer %v", token.Token))
+	return convertedRequest
+}
+
+// Client returns an *http.Client that makes requests that are authenticated
+// using HTTP Basic Authentication.
+func (t *BearerTokenTransport) Client() *http.Client {
+	return &http.Client{Transport: t}
+}
+
+func (t *BearerTokenTransport) transport() http.RoundTripper {
+	if t.Transport != nil {
+		return t.Transport
+	}
+	return http.DefaultTransport
 }
