@@ -30,17 +30,17 @@ type User struct {
 	Login                    string      `json:"login,omitempty"`
 }
 
-func (s *UsersService) Get(ctx context.Context) (*User, *Response, error) {
-	req, err := s.client.NewRequestWithAuth(http.MethodGet, "user", nil)
+func (s *UsersService) Get(ctx context.Context) (*User, error) {
+	req, err := s.client.NewRequest(http.MethodGet, "user", nil)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
-	uResp := new(User)
-	resp, err := s.client.Do(ctx, req, uResp)
+	user := new(User)
+	_, err = s.client.Do(ctx, req, user)
 	if err != nil {
-		return nil, resp, err
+		return nil, err
 	}
 
-	return uResp, resp, err
+	return user, err
 }
