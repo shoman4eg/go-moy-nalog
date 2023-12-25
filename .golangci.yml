@@ -1,58 +1,62 @@
 run:
-  concurrency: 8
-  deadline: 10m
+  go: "1.20"
+  concurrency: 16
+  timeout: 5m
   issues-exit-code: 1
-  tests: false
+  tests: true
+output:
+  format: colored-line-number
+  print-issued-lines: true
+  print-linter-name: true
 
 linters-settings:
-  unused:
-    check-exported: true
-  depguard:
-    list-type: blacklist
-    include-go-root: true
-    packages:
-      - errors
   goimports:
     local-prefixes: github.com/shoman4eg/go-moy-nalog
-  govet:
-    check-shadowing: true
-  golint:
-    min-confidence: 0
-  gocyclo:
-    min-complexity: 15
-  unparam:
-    check-exported: true
+
+  depguard:
+    rules:
+      main:
+        deny:
+          - pkg: errors
+            desc: use "github.com/pkg/errors" instead
+
+  gci:
+    sections:
+      - standard
+      - default
+      - prefix(github.com/shoman4eg/go-moy-nalog)
+
+  revive:
+    rules:
+      - name: blank-imports
+        disabled: true
 
 linters:
-  disable-all: true
   enable:
-    - depguard
-    - errcheck
-    - gocritic
-    - gocyclo
+    - dogsled
+    - dupl
     - gofmt
     - goimports
-    - revive
     - gosec
-    - govet
-    - ineffassign
     - misspell
     - nakedret
-    - prealloc
-    - exportloopref
-    - staticcheck
     - stylecheck
     - unconvert
     - unparam
-    - bodyclose
-    - deadcode
-    - dogsled
-    - dupl
-    - funlen
-    - gochecknoinits
-    - goconst
-    - gosimple
-    - noctx
-    - structcheck
-    - typecheck
     - whitespace
+    - errcheck
+    - goconst
+    - revive
+    - ineffassign
+    - misspell
+    - unconvert
+    - govet
+    - typecheck
+    - depguard
+    - exportloopref
+    - gofmt
+    - goimports
+    - gosimple
+    - staticcheck
+  disable:
+    - unused
