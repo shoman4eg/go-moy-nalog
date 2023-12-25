@@ -12,8 +12,10 @@ import (
 
 func main() {
 	client := moynalog.NewClient(nil)
-	token, _, err := client.Auth.CreateAccessToken(context.Background(), "inn", "password")
-
+	token, err := client.Auth.CreateAccessToken(context.Background(), "inn", "password")
+	if err != nil {
+		panic("create token failed")
+	}
 	client = moynalog.NewAuthClient(token)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -30,13 +32,18 @@ func main() {
 				Amount:   decimal.NewFromInt(1000),
 				Quantity: 10,
 			},
+			{
+				Name:     "Test 2 service",
+				Amount:   decimal.NewFromFloat(1900.33),
+				Quantity: 10,
+			},
 		},
 	})
 	if err != nil {
 		return
 	}
 
-	fmt.Printf("Create income %+v, create income response: %+v", create)
+	fmt.Printf("Create income %+v", create)
 
 	cancel()
 }

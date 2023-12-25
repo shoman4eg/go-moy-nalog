@@ -23,8 +23,10 @@ const (
 )
 
 var (
-	errNonNilContext      = errors.New("context must be non-nil")
-	errAccessTokenIsEmpty = errors.New("access token cannot be null")
+	errNonNilContext         = errors.New("context must be non-nil")
+	errAccessTokenIsEmpty    = errors.New("access token cannot be null")
+	errAccessTokenIsExpired  = errors.New("access token is expired")
+	errRefreshTokenIsExpired = errors.New("refresh token is expired")
 )
 
 type Client struct {
@@ -183,7 +185,7 @@ func (c *Client) BareDo(ctx context.Context, req *http.Request) (*Response, erro
 		return nil, errNonNilContext
 	}
 
-	req.WithContext(ctx)
+	req = req.WithContext(ctx)
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -273,6 +275,12 @@ type BearerTokenTransport struct {
 
 // RoundTrip implements the RoundTripper interface.
 func (t *BearerTokenTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.Token == nil {
+		return nil, errAccessTokenIsEmpty
+	}
+	if t.Token.IsExpired() {
+		return nil, errAccessTokenIsExpired
+	}
 	return t.transport().RoundTrip(setBearerTokenHeader(req, t.Token))
 }
 

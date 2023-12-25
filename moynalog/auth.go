@@ -21,7 +21,11 @@ type AccessToken struct {
 	Profile               User      `json:"profile,omitempty"`
 }
 
-func (s *AuthSerive) CreateAccessToken(ctx context.Context, username, password string) (*AccessToken, *Response, error) {
+func (t *AccessToken) IsExpired() bool {
+	return t.TokenExpireIn.After(time.Now())
+}
+
+func (s *AuthSerive) CreateAccessToken(ctx context.Context, username, password string) (*AccessToken, error) {
 	di := NewDeviceInfo(generateDeviceID())
 	di.MetaDetails.UserAgent = s.client.UserAgent
 	reqBody := struct {
@@ -36,7 +40,7 @@ func (s *AuthSerive) CreateAccessToken(ctx context.Context, username, password s
 
 	req, err := s.client.NewRequest(http.MethodPost, "auth/lkfl", reqBody)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	for k, v := range authHeaders {
@@ -44,10 +48,48 @@ func (s *AuthSerive) CreateAccessToken(ctx context.Context, username, password s
 	}
 
 	atResp := new(AccessToken)
-	resp, err := s.client.Do(ctx, req, atResp)
+	_, err = s.client.Do(ctx, req, atResp)
 	if err != nil {
-		return nil, resp, err
+		return nil, err
 	}
 
-	return atResp, resp, err
+	return atResp, err
+}
+
+func (s *AuthSerive) RefreshToken(ctx context.Context, token *AccessToken) (*AccessToken, error) {
+	if token == nil {
+		return nil, errAccessTokenIsEmpty
+	}
+	if token.IsExpired() {
+		return token, nil
+	}
+	if token.RefreshTokenExpiresIn.After(time.Now()) {
+		return nil, errRefreshTokenIsExpired
+	}
+	di := NewDeviceInfo(generateDeviceID())
+	di.MetaDetails.UserAgent = s.client.UserAgent
+	reqBody := struct {
+		RefreshToken string      `json:"refreshToken"`
+		DeviceInfo   *DeviceInfo `json:"deviceInfo"`
+	}{
+		DeviceInfo:   di,
+		RefreshToken: token.RefreshToken,
+	}
+
+	req, err := s.client.NewRequest(http.MethodPost, "auth/token", reqBody)
+	if err != nil {
+		return nil, err
+	}
+
+	for k, v := range authHeaders {
+		req.Header.Set(k, v)
+	}
+
+	atResp := new(AccessToken)
+	_, err = s.client.Do(ctx, req, atResp)
+	if err != nil {
+		return nil, err
+	}
+
+	return atResp, err
 }
