@@ -113,6 +113,9 @@ func (s *IncomeService) Create(ctx context.Context, income *IncomeCreateRequest)
 	}
 
 	req, err := s.client.NewRequest(http.MethodPost, "income", income)
+	if err != nil {
+		return nil, err
+	}
 	icResp := new(IncomeCreate)
 	_, err = s.client.Do(ctx, req, icResp)
 	if err != nil {
@@ -153,7 +156,7 @@ type IncomeCancel struct {
 	} `json:"cancellationInfo"`
 }
 
-func (s *IncomeService) Cancel(ctx context.Context, income *IncomeCancelRequest) (*IncomeCancel, error) {
+func (s *IncomeService) Cancel(ctx context.Context, income *IncomeCancelRequest) (*IncomeCancel, *Response, error) {
 	income.RequestTime = time.Now().Truncate(time.Millisecond)
 	if income.OperationTime.IsZero() {
 		income.OperationTime = income.RequestTime
@@ -161,11 +164,14 @@ func (s *IncomeService) Cancel(ctx context.Context, income *IncomeCancelRequest)
 	income.OperationTime = income.OperationTime.Truncate(time.Millisecond)
 
 	req, err := s.client.NewRequest(http.MethodPost, "income", income)
-	icResp := new(IncomeCancel)
-	_, err = s.client.Do(ctx, req, icResp)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	icResp := new(IncomeCancel)
+	resp, err := s.client.Do(ctx, req, icResp)
+	if err != nil {
+		return nil, resp, err
 	}
 
-	return icResp, err
+	return icResp, resp, err
 }

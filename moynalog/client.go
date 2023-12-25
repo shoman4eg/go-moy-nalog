@@ -275,6 +275,12 @@ type BearerTokenTransport struct {
 
 // RoundTrip implements the RoundTripper interface.
 func (t *BearerTokenTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.Token == nil {
+		return nil, errAccessTokenIsEmpty
+	}
+	if t.Token.IsExpired() {
+		return nil, errAccessTokenIsExpired
+	}
 	return t.transport().RoundTrip(setBearerTokenHeader(req, t.Token))
 }
 
