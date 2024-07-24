@@ -2,6 +2,8 @@ package moynalog
 
 import (
 	"fmt"
+
+	"github.com/pkg/errors"
 )
 
 // APIError Define API error when response status is 4xx or 5xx
@@ -17,6 +19,6 @@ func (e APIError) Error() string {
 
 // IsAPIError Check if e is an API error
 func IsAPIError(e error) bool {
-	_, ok := e.(*APIError)
-	return ok
+	var err *APIError
+	return errors.As(e, &err)
 }
