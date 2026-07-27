@@ -1,129 +1,303 @@
+// Package moynalog is an unofficial client for the lknpd.nalog.ru ("Мой налог")
+// API used by self-employed taxpayers in Russia.
 package moynalog
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
-	"time"
 
+	"github.com/google/go-querystring/query"
 	"github.com/pkg/errors"
 )
 
 const (
-	defaultBaseURL = "https://lknpd.nalog.ru/api"
-	baseAPIVersion = "v1"
+	defaultEndpoint = "https://lknpd.nalog.ru/api"
+	defaultVersion  = "v1"
+	// phoneAuthVersion is the API version serving the SMS challenge endpoints.
+	phoneAuthVersion = "v2"
 
 	defaultUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 11_2_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/88.0.4324.192 Safari/537.36"
+
+	mediaTypeJSON = "application/json"
+
+	// maxAuthRetries limits how many times a single request is replayed after a
+	// 401 response triggered an access token refresh.
+	maxAuthRetries = 2
 )
 
 var (
-	errNonNilContext         = errors.New("context must be non-nil")
-	errAccessTokenIsEmpty    = errors.New("access token cannot be null")
-	errAccessTokenIsExpired  = errors.New("access token is expired")
-	errRefreshTokenIsExpired = errors.New("refresh token is expired")
+	errNonNilContext = errors.New("moynalog: context must be non-nil")
+	errNoAccessToken = errors.New("moynalog: client is not authenticated")
 )
 
+// skipAuthContextKey marks requests that must not carry an Authorization header
+// and must not be replayed through the token refresh flow.
+type skipAuthContextKey struct{}
+
+func withoutAuth(ctx context.Context) context.Context {
+	return context.WithValue(ctx, skipAuthContextKey{}, true)
+}
+
+func authSkipped(ctx context.Context) bool {
+	skip, ok := ctx.Value(skipAuthContextKey{}).(bool)
+
+	return ok && skip
+}
+
+// Client manages communication with the lknpd.nalog.ru API. It is safe for
+// concurrent use by multiple goroutines.
 type Client struct {
-	clientMu  sync.Mutex
-	client    *http.Client
-	BaseURL   *url.URL
+	clientMu sync.Mutex
+	client   *http.Client
+
+	// BaseURL is the versioned API root. It must always end in a trailing slash.
+	BaseURL *url.URL
+	// UserAgent is sent with every request. The default impersonates a desktop
+	// browser, which is what the upstream API expects.
 	UserAgent string
 
-	AccessToken *AccessToken
+	version string
 
-	common service
+	// deviceID is derived once in NewClient and never changes afterwards: the
+	// API ties registered receipts to the device that created them.
+	deviceIDGenerator DeviceIDGenerator
+	deviceID          string
+	deviceIDErr       error
 
-	Auth    *AuthSerive
-	Users   *UsersService
-	Income  *IncomeService
-	Receipt *ReceiptService
+	tokenMu sync.RWMutex
+	token   *AccessToken
+
+	common service // Reuse a single struct instead of allocating one per service.
+
+	// Services used for talking to the different parts of the API.
+	Auth        *AuthService
+	Users       *UsersService
+	Income      *IncomeService
+	Invoice     *InvoiceService
+	Receipt     *ReceiptService
+	PaymentType *PaymentTypeService
+	Tax         *TaxService
+	Taxpayer    *TaxpayerService
 }
 
 type service struct {
 	client *Client
 }
 
-func (c *Client) Client() *http.Client {
-	c.clientMu.Lock()
-	defer c.clientMu.Unlock()
-	clientCopy := *c.client
-	return &clientCopy
+// Option customises a Client at construction time.
+type Option func(*Client)
+
+// WithHTTPClient makes the client send its requests through httpClient.
+func WithHTTPClient(httpClient *http.Client) Option {
+	return func(c *Client) {
+		if httpClient != nil {
+			c.client = httpClient
+		}
+	}
 }
 
-type LimitOptions struct {
-	Limit  int    `url:"limit,omitempty"`
-	Offset int    `url:"offset,omitempty"`
-	SortBy string `url:"sortBy,omitempty"`
+// WithEndpoint overrides the API root, which defaults to
+// https://lknpd.nalog.ru/api. The version segment is appended to it, so pass
+// the URL without one.
+func WithEndpoint(endpoint string) Option {
+	return func(c *Client) {
+		c.BaseURL = mustBaseURL(endpoint, c.version)
+	}
 }
 
-type DateRangeOptions struct {
-	From time.Time `url:"from,omitempty"`
-	To   time.Time `url:"to,omitempty"`
+// WithVersion overrides the API version segment, which defaults to v1.
+func WithVersion(version string) Option {
+	return func(c *Client) {
+		if version == "" {
+			return
+		}
+		endpoint := strings.TrimSuffix(c.BaseURL.String(), "/"+c.version+"/")
+		c.version = version
+		c.BaseURL = mustBaseURL(endpoint, version)
+	}
 }
 
-func NewClient(httpClient *http.Client) *Client {
-	return NewClientWithVersion(httpClient, baseAPIVersion)
+// WithUserAgent overrides the User-Agent header sent with every request.
+func WithUserAgent(userAgent string) Option {
+	return func(c *Client) {
+		if userAgent != "" {
+			c.UserAgent = userAgent
+		}
+	}
 }
 
-func NewAuthClient(token *AccessToken) *Client {
-	bc := BearerTokenTransport{Token: token}
-	return NewClient(bc.Client())
+// WithDeviceID pins the device identifier reported to the API during
+// authentication instead of deriving one from the host.
+func WithDeviceID(deviceID string) Option {
+	return func(c *Client) {
+		c.deviceID = deviceID
+	}
 }
 
-func NewClientWithVersion(httpClient *http.Client, version string) *Client {
-	if httpClient == nil {
-		httpClient = &http.Client{}
+// WithDeviceIDGenerator replaces the strategy used to derive a device
+// identifier. It is ignored when WithDeviceID is also supplied.
+func WithDeviceIDGenerator(generator DeviceIDGenerator) Option {
+	return func(c *Client) {
+		if generator != nil {
+			c.deviceIDGenerator = generator
+		}
+	}
+}
+
+func mustBaseURL(endpoint, version string) *url.URL {
+	parsed, err := url.Parse(strings.TrimSuffix(endpoint, "/") + "/" + version + "/")
+	if err != nil {
+		return nil
 	}
 
-	baseURL, _ := url.Parse(fmt.Sprintf("%s/%s/", defaultBaseURL, version))
+	return parsed
+}
 
-	c := &Client{client: httpClient, BaseURL: baseURL, UserAgent: defaultUserAgent}
+// NewClient returns a new lknpd.nalog.ru API client. The returned client is
+// unauthenticated; obtain a token through the Auth service and derive an
+// authenticated client from it with WithToken.
+func NewClient(opts ...Option) *Client {
+	c := &Client{
+		client:            new(http.Client),
+		BaseURL:           mustBaseURL(defaultEndpoint, defaultVersion),
+		UserAgent:         defaultUserAgent,
+		version:           defaultVersion,
+		deviceIDGenerator: NewPlatformDeviceIDGenerator(),
+	}
 
-	c.common.client = c
+	for _, opt := range opts {
+		opt(c)
+	}
 
-	c.Auth = (*AuthSerive)(&c.common)
-	c.Users = (*UsersService)(&c.common)
-	c.Income = (*IncomeService)(&c.common)
-	c.Receipt = (*ReceiptService)(&c.common)
+	// Derive the device identifier once, here, so it stays stable for every
+	// request this client will ever make. A failure is remembered and reported
+	// by the authentication calls, which are the only users of it.
+	if c.deviceID == "" {
+		c.deviceID, c.deviceIDErr = c.deviceIDGenerator.DeviceID()
+	}
+
+	c.initServices()
 
 	return c
 }
 
+func (c *Client) initServices() {
+	c.common.client = c
+
+	c.Auth = (*AuthService)(&c.common)
+	c.Users = (*UsersService)(&c.common)
+	c.Income = (*IncomeService)(&c.common)
+	c.Invoice = (*InvoiceService)(&c.common)
+	c.Receipt = (*ReceiptService)(&c.common)
+	c.PaymentType = (*PaymentTypeService)(&c.common)
+	c.Tax = (*TaxService)(&c.common)
+	c.Taxpayer = (*TaxpayerService)(&c.common)
+}
+
+// Client returns a copy of the underlying *http.Client.
+func (c *Client) Client() *http.Client {
+	c.clientMu.Lock()
+	defer c.clientMu.Unlock()
+	clientCopy := *c.client
+
+	return &clientCopy
+}
+
+// WithToken returns a copy of the client that authenticates its requests with
+// token. Expired access tokens are refreshed automatically, so read the current
+// token back with Token before persisting it.
+func (c *Client) WithToken(token *AccessToken) *Client {
+	authed := &Client{
+		client:            c.client,
+		BaseURL:           c.BaseURL,
+		UserAgent:         c.UserAgent,
+		version:           c.version,
+		deviceIDGenerator: c.deviceIDGenerator,
+		deviceID:          c.deviceID,
+		deviceIDErr:       c.deviceIDErr,
+		token:             token,
+	}
+	authed.initServices()
+
+	return authed
+}
+
+// Token returns the access token currently held by the client, which may have
+// been refreshed since it was passed to WithToken. It returns nil when the
+// client is unauthenticated.
+func (c *Client) Token() *AccessToken {
+	c.tokenMu.RLock()
+	defer c.tokenMu.RUnlock()
+
+	return c.token
+}
+
+func (c *Client) setToken(token *AccessToken) {
+	c.tokenMu.Lock()
+	defer c.tokenMu.Unlock()
+
+	c.token = token
+}
+
+// DeviceID returns the device identifier reported to the API during
+// authentication. It is derived by NewClient and never changes.
+func (c *Client) DeviceID() string {
+	return c.deviceID
+}
+
+// NewRequest creates an API request. urlStr is resolved relative to BaseURL and
+// should therefore never have a leading slash. A non-nil body is JSON encoded.
 func (c *Client) NewRequest(method, urlStr string, body any) (*http.Request, error) {
-	if !strings.HasSuffix(c.BaseURL.Path, "/") {
-		return nil, errors.Errorf("BaseURL must have a trailing slash, but %q does not", c.BaseURL)
+	return c.newRequest(c.BaseURL, method, urlStr, body)
+}
+
+// newVersionedRequest builds a request against an API version other than the
+// configured one. Only the SMS challenge endpoints need this.
+func (c *Client) newVersionedRequest(method, version, urlStr string, body any) (*http.Request, error) {
+	base := c.BaseURL
+	if version != c.version {
+		endpoint := strings.TrimSuffix(c.BaseURL.String(), "/"+c.version+"/")
+		base = mustBaseURL(endpoint, version)
 	}
 
-	u, err := c.BaseURL.Parse(urlStr)
+	return c.newRequest(base, method, urlStr, body)
+}
+
+func (c *Client) newRequest(base *url.URL, method, urlStr string, body any) (*http.Request, error) {
+	if base == nil || !strings.HasSuffix(base.Path, "/") {
+		return nil, errors.Errorf("moynalog: BaseURL must have a trailing slash, but %q does not", base)
+	}
+
+	u, err := base.Parse(strings.TrimPrefix(urlStr, "/"))
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "moynalog: cannot resolve request URL")
 	}
 
 	var buf io.ReadWriter
 	if body != nil {
-		buf = &bytes.Buffer{}
+		buf = new(bytes.Buffer)
 		enc := json.NewEncoder(buf)
 		enc.SetEscapeHTML(false)
 		if err := enc.Encode(body); err != nil {
-			return nil, err
+			return nil, errors.Wrap(err, "moynalog: cannot encode request body")
 		}
 	}
 
 	req, err := http.NewRequest(method, u.String(), buf)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "moynalog: cannot create request")
 	}
 
 	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Type", mediaTypeJSON)
 	}
-
 	req.Header.Set("Accept", "application/json, text/plain, */*")
 	req.Header.Set("Accept-language", "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7")
 	if c.UserAgent != "" {
@@ -133,184 +307,160 @@ func (c *Client) NewRequest(method, urlStr string, body any) (*http.Request, err
 	return req, nil
 }
 
+// addOptions adds the parameters in opts as URL query parameters of s. opts
+// must be a struct whose fields may contain "url" tags.
+func addOptions(s string, opts any) (string, error) {
+	v := reflect.ValueOf(opts)
+	if v.Kind() == reflect.Ptr && v.IsNil() {
+		return s, nil
+	}
+
+	u, err := url.Parse(s)
+	if err != nil {
+		return s, errors.Wrap(err, "moynalog: cannot parse URL")
+	}
+
+	qs, err := query.Values(opts)
+	if err != nil {
+		return s, errors.Wrap(err, "moynalog: cannot encode query parameters")
+	}
+	u.RawQuery = qs.Encode()
+
+	return u.String(), nil
+}
+
+// Response wraps *http.Response so response metadata can grow independently of
+// the standard library type.
 type Response struct {
 	*http.Response
 }
 
 func newResponse(r *http.Response) *Response {
-	response := &Response{Response: r}
-	return response
+	return &Response{Response: r}
 }
 
-type Error struct {
-	Code           string `json:"code"`
-	Message        string `json:"message"`
-	AdditionalInfo any    `json:"additionalInfo"`
-}
-
-func (e *Error) Error() string {
-	return fmt.Sprintf("%v error caused with %v message and %v additionalInfo", e.Code, e.Message, e.AdditionalInfo)
-}
-
-func (e *Error) UnmarshalJSON(data []byte) error {
-	type aliasError Error // avoid infinite recursion by using type alias.
-	if err := json.Unmarshal(data, (*aliasError)(e)); err != nil {
-		return json.Unmarshal(data, &e.Message) // data can be json string.
-	}
-	return nil
-}
-
-type ErrorResponse struct {
-	Response *http.Response // HTTP response that caused this error
-	Message  string         `json:"message"` // error message
-	Code     string         `json:"code"`    // error message
-}
-
-func (r *ErrorResponse) Error() string {
-	return fmt.Sprintf("%v %v: %d %v %+v",
-		r.Response.Request.Method, r.Response.Request.URL,
-		r.Response.StatusCode, r.Message, r.Code)
-}
-
-// BareDo sends an API request and lets you handle the api response. If an error
-// or API Error occurs, the error will contain more information. Otherwise, you
-// are supposed to read and close the response's Body. If rate limit is exceeded
-// and reset time is in the future, BareDo returns *RateLimitError immediately
-// without making a network API call.
+// Do sends an API request and decodes a successful JSON response into v. When v
+// implements io.Writer the raw body is copied into it instead; a nil v discards
+// the body.
 //
-// The provided ctx must be non-nil, if it is nil an error is returned. If it is
-// canceled or times out, ctx.Err() will be returned.
+// A 401 response triggers an access token refresh and a replay of the request,
+// at most maxAuthRetries times.
+func (c *Client) Do(ctx context.Context, req *http.Request, v any) (*Response, error) {
+	resp, err := c.BareDo(ctx, req)
+	if err != nil {
+		return resp, err
+	}
+	//nolint:gosec // G104: the body has been consumed; a close failure here
+	// is not actionable by the caller.
+	defer func() { _ = resp.Body.Close() }()
+
+	switch v := v.(type) {
+	case nil:
+	case io.Writer:
+		if _, err := io.Copy(v, resp.Body); err != nil {
+			return resp, errors.Wrap(err, "moynalog: cannot read response body")
+		}
+	default:
+		// An empty body is not an error; several endpoints answer with one.
+		if err := json.NewDecoder(resp.Body).Decode(v); err != nil && !errors.Is(err, io.EOF) {
+			return resp, errors.Wrap(err, "moynalog: cannot decode response body")
+		}
+	}
+
+	return resp, nil
+}
+
+// BareDo sends an API request and leaves the response body open for the caller
+// to read and close. The body is already drained and closed when a non-nil
+// error is returned.
 func (c *Client) BareDo(ctx context.Context, req *http.Request) (*Response, error) {
 	if ctx == nil {
 		return nil, errNonNilContext
 	}
 
-	req = req.WithContext(ctx)
+	skipAuth := authSkipped(ctx)
 
+	for attempt := 0; ; attempt++ {
+		token := c.Token()
+
+		outReq, err := cloneRequest(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		if !skipAuth && token != nil && outReq.Header.Get("Authorization") == "" {
+			outReq.Header.Set("Authorization", "Bearer "+token.Token)
+		}
+
+		resp, err := c.send(ctx, outReq)
+		if err != nil {
+			return nil, err
+		}
+
+		apiErr := CheckResponse(resp)
+		if apiErr == nil {
+			return newResponse(resp), nil
+		}
+		//nolint:gosec // G104: CheckResponse already drained the body.
+		_ = resp.Body.Close()
+
+		retriable := !skipAuth &&
+			resp.StatusCode == http.StatusUnauthorized &&
+			attempt < maxAuthRetries &&
+			token != nil &&
+			token.RefreshToken != ""
+		if !retriable {
+			return newResponse(resp), apiErr
+		}
+
+		refreshed, _, err := c.Auth.Refresh(ctx, token)
+		if err != nil {
+			// Surface the original 401; the refresh failure is only context.
+			return newResponse(resp), errors.Wrap(apiErr, err.Error())
+		}
+		c.setToken(refreshed)
+	}
+}
+
+func (c *Client) send(ctx context.Context, req *http.Request) (*http.Response, error) {
+	//nolint:gosec // G704: relaying caller-built requests to the configured
+	// endpoint is the entire purpose of this package.
 	resp, err := c.client.Do(req)
 	if err != nil {
-		// If we got an error, and the context has been canceled,
-		// the context's error is probably more useful.
+		// A cancelled context explains the failure better than the transport error.
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		default:
 		}
 
-		// If the error type is *url.Error, sanitize its URL before returning.
-		if e, ok := err.(*url.Error); ok {
-			if uri, err := url.Parse(e.URL); err == nil {
-				e.URL = uri.String()
-				return nil, e
+		// Sanitize the URL of *url.Error before letting it escape.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			if sanitized, perr := url.Parse(urlErr.URL); perr == nil {
+				urlErr.URL = sanitized.String()
+
+				return nil, urlErr
 			}
 		}
 
 		return nil, err
 	}
 
-	response := newResponse(resp)
+	return resp, nil
+}
 
-	err = CheckResponse(resp)
+// cloneRequest produces a replayable copy of req bound to ctx.
+func cloneRequest(ctx context.Context, req *http.Request) (*http.Request, error) {
+	clone := req.Clone(ctx)
+	if req.GetBody == nil {
+		return clone, nil
+	}
+
+	body, err := req.GetBody()
 	if err != nil {
-		defer resp.Body.Close()
+		return nil, errors.Wrap(err, "moynalog: cannot rewind request body")
 	}
-	return response, err
-}
+	clone.Body = body
 
-// Do sends an API request and returns the API response. The API response is
-// JSON decoded and stored in the value pointed to by v, or returned as an
-// error if an API error has occurred. If v implements the io.Writer interface,
-// the raw response body will be written to v, without attempting to first
-// decode it. If v is nil, and no error hapens, the response is returned as is.
-// If rate limit is exceeded and reset time is in the future, Do returns
-// *RateLimitError immediately without making a network API call.
-//
-// The provided ctx must be non-nil, if it is nil an error is returned. If it
-// is canceled or times out, ctx.Err() will be returned.
-func (c *Client) Do(ctx context.Context, req *http.Request, v interface{}) (*Response, error) {
-	resp, err := c.BareDo(ctx, req)
-	if err != nil {
-		return resp, err
-	}
-	defer resp.Body.Close()
-
-	switch v := v.(type) {
-	case nil:
-	case io.Writer:
-		_, err = io.Copy(v, resp.Body)
-	default:
-		decErr := json.NewDecoder(resp.Body).Decode(v)
-		if decErr == io.EOF {
-			decErr = nil // ignore EOF errors caused by empty response body
-		}
-		if decErr != nil {
-			err = decErr
-		}
-	}
-	return resp, err
-}
-
-func CheckResponse(r *http.Response) error {
-	if c := r.StatusCode; 200 <= c && c <= 299 {
-		return nil
-	}
-
-	errorResponse := &ErrorResponse{Response: r}
-	data, err := io.ReadAll(r.Body)
-	if err != nil && data != nil {
-		if err0 := json.Unmarshal(data, errorResponse); err0 != nil {
-			return err0
-		}
-	}
-
-	return errorResponse
-}
-
-type BearerTokenTransport struct {
-	Token *AccessToken
-	// Transport is the underlying HTTP transport to use when making requests.
-	// It will default to http.DefaultTransport if nil.
-	Transport http.RoundTripper
-}
-
-// RoundTrip implements the RoundTripper interface.
-func (t *BearerTokenTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if t.Token == nil {
-		return nil, errAccessTokenIsEmpty
-	}
-	if t.Token.IsExpired() {
-		return nil, errAccessTokenIsExpired
-	}
-	return t.transport().RoundTrip(setBearerTokenHeader(req, t.Token))
-}
-
-func setBearerTokenHeader(req *http.Request, token *AccessToken) *http.Request {
-	// To set extra headers, we must make a copy of the Request so
-	// that we don't modify the Request we were given. This is required by the
-	// specification of http.RoundTripper.
-	//
-	// Since we are going to modify only req.Header here, we only need a deep copy
-	// of req.Header.
-	convertedRequest := new(http.Request)
-	*convertedRequest = *req
-	convertedRequest.Header = make(http.Header, len(req.Header))
-
-	for k, s := range req.Header {
-		convertedRequest.Header[k] = append([]string(nil), s...)
-	}
-	convertedRequest.Header.Set("Authorization", fmt.Sprintf("Bearer %v", token.Token))
-	return convertedRequest
-}
-
-// Client returns an *http.Client that makes requests that are authenticated
-// using HTTP Basic Authentication.
-func (t *BearerTokenTransport) Client() *http.Client {
-	return &http.Client{Transport: t}
-}
-
-func (t *BearerTokenTransport) transport() http.RoundTripper {
-	if t.Transport != nil {
-		return t.Transport
-	}
-	return http.DefaultTransport
+	return clone, nil
 }
