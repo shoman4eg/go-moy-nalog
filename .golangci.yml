@@ -1,62 +1,123 @@
+version: "2"
+
 run:
-  go: "1.20"
-  concurrency: 16
-  timeout: 5m
-  issues-exit-code: 1
-  tests: true
-output:
-  format: colored-line-number
-  print-issued-lines: true
-  print-linter-name: true
+  go: "1.25"
+  concurrency: 4
+  relative-path-mode: gomod  # Пути к файлам интерпретируются относительно корня go-модуля
+  timeout: 5m  # Максимальное время выполнения анализа
+  issues-exit-code: 1  # Код выхода = 1, если найдены ошибки
+  tests: true  # Анализировать также _test.go файлы
+  modules-download-mode: readonly  # Не разрешать загрузку зависимостей во время анализа
 
-linters-settings:
-  goimports:
-    local-prefixes: github.com/shoman4eg/go-moy-nalog
+output: # Настройки вывода результатов линтинга
+  formats:
+    text:
+      print-linter-name: true  # Показывать имя линтера рядом с каждым сообщением
+      print-issued-lines: true  # Показывать строку кода, где найдена проблема
+      colors: true
 
-  depguard:
-    rules:
-      main:
-        deny:
-          - pkg: errors
-            desc: use "github.com/pkg/errors" instead
+issues: # Общие настройки для обработки проблем
+  max-issues-per-linter: 0  # Без лимита на количество ошибок от одного линтера
+  max-same-issues: 0  # Без лимита на количество одинаковых ошибок
+  uniq-by-line: true  # Максимум одна ошибка на строку
 
-  gci:
-    sections:
-      - standard
-      - default
-      - prefix(github.com/shoman4eg/go-moy-nalog)
-
-  revive:
-    rules:
-      - name: blank-imports
-        disabled: true
-
-linters:
+formatters:
   enable:
-    - dogsled
-    - dupl
-    - gofmt
-    - goimports
-    - gosec
-    - misspell
-    - nakedret
-    - stylecheck
-    - unconvert
-    - unparam
-    - whitespace
-    - errcheck
-    - goconst
-    - revive
-    - ineffassign
-    - misspell
-    - unconvert
-    - govet
-    - typecheck
-    - depguard
-    - exportloopref
-    - gofmt
-    - goimports
-    - gosimple
-    - staticcheck
+    - gofumpt  # Строгая версия gofmt с дополнительными правилами
+    - gci      # Форматтер импортов
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/shoman4eg/go-moy-nalog
+    gofumpt:
+      module-path: github.com/shoman4eg/go-moy-nalog
+      extra-rules: true
+    gci:
+      sections: # Порядок группировки импортов
+        - Standard
+        - Default
+        - Prefix(github.com/shoman4eg/go-moy-nalog)
+      no-inline-comments: false
+
+linters: # Список активных и отключённых линтеров
+  default: standard  # Стандартный набор линтеров golangci-lint
+  enable: # Явно включенные дополнительные линтеры
+    - errcheck        # Проверяет, что ошибки не игнорируются
+    - staticcheck     # Глубокий статический анализ
+    - govet           # Встроенный в Go инструмент анализа
+    - gocritic        # Продвинутые правила качества кода
+    - revive          # Стиль кода, оформление, названия
+    - unused          # Неиспользуемые переменные, типы, функции
+    - gosec           # Уязвимости и небезопасные практики
+    - depguard        # Контроль импортируемых пакетов
+    - bodyclose       # Проверяет, что закрывается resp.Body
+    - asciicheck      # Не-ASCII символы в идентификаторах
+    - cyclop          # Цикломатическая сложность функций
+    - dupl            # Дублированные фрагменты кода
+    - ineffassign     # Неиспользуемые присваивания
+    - unparam         # Неиспользуемые параметры функций
+    - errorlint       # errors.Is / errors.As вместо прямых сравнений
+    - errname         # Имена переменных/типов ошибок
+    - forbidigo       # Запрещённые вызовы по regex-паттернам
+    - contextcheck    # context.Context передаётся в методы/функции
+    - containedctx    # context.Context не хранится в структурах
+    - misspell        # Опечатки в комментариях и строках
+    - nakedret        # Голые return в длинных функциях
+    - unconvert       # Лишние преобразования типов
+    - whitespace      # Лишние пустые строки
+    - goconst         # Повторяющиеся строковые литералы
   disable:
-    - unused
+    - gocyclo  # Заменён на cyclop
+    - lll      # Проверка длины строк, шумная
+
+  exclusions: # Исключения из анализа
+    generated: strict
+    rules:
+      - path: _test\.go  # Для тестов:
+        linters:
+          - cyclop     # Не проверять сложность
+          - dupl       # Не проверять дублирование
+          - gosec      # Не искать уязвимости
+          - goconst    # Не проверять повторяющиеся литералы
+      - path: example/  # Примеры печатают результат в stdout
+        linters:
+          - forbidigo
+      # ErrorResponse повторяет имя типа из google/go-github, по образцу
+      # которого построен клиент, поэтому формат XxxError здесь неприменим.
+      - path: moynalog/errors\.go
+        linters:
+          - errname
+
+  settings: # Индивидуальные настройки линтеров
+
+    gosec:
+      config:
+        global:
+          audit: true
+          show-ignored: true
+        severity: "medium"
+        confidence: "medium"
+
+    cyclop:
+      max-complexity: 20
+
+    depguard:
+      rules:
+        main:
+          deny:
+            - pkg: errors
+              desc: 'Use "github.com/pkg/errors" instead of the standard library errors package'
+            - pkg: io/ioutil
+              desc: "Using the deprecated package io/ioutil is forbidden (replace calls with equivalents from os/io)"
+
+    revive:
+      severity: warning
+
+    forbidigo:
+      exclude-godoc-examples: true
+      analyze-types: true
+      forbid:
+        - pattern: '^time\.Sleep$'  # Запрет использования time.Sleep
+          msg: "Using time.Sleep in production code is forbidden (use timers/contexts instead)"
+        - pattern: '^http\.DefaultClient$'  # Небезопасный http.DefaultClient
+          msg: "Do not use http.DefaultClient (it lacks timeouts); create an *http.Client with timeouts instead"

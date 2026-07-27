@@ -6,35 +6,52 @@ import (
 	"log"
 	"time"
 
+	"github.com/pkg/errors"
+
 	"github.com/shoman4eg/go-moy-nalog/moynalog"
 )
 
 func main() {
-	client := moynalog.NewClient(nil)
-	token, err := client.Auth.CreateAccessToken(context.Background(), "inn", "password")
-	if err != nil {
+	if err := run(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func run() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	client := moynalog.NewClient()
+
+	token, _, err := client.Auth.CreateAccessToken(ctx, "inn", "password")
+	if err != nil {
+		return errors.Wrap(err, "create access token")
+	}
+
+	// Expired tokens are refreshed automatically on the first 401, so this is
+	// only worth doing when reusing a token persisted from an earlier run.
 	if token.IsExpired() {
-		token, err = client.Auth.RefreshToken(context.Background(), token)
+		token, _, err = client.Auth.Refresh(ctx, token)
 		if err != nil {
-			log.Fatal(err)
+			return errors.Wrap(err, "refresh access token")
 		}
 	}
 
-	client = moynalog.NewAuthClient(token)
+	client = client.WithToken(token)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	cancelIncome, resp, err := client.Income.Cancel(ctx, &moynalog.IncomeCancelRequest{
-		Comment:     moynalog.Cancel,
+	cancelled, _, err := client.Income.Cancel(ctx, &moynalog.IncomeCancelRequest{
 		ReceiptUUID: "receiptUUID",
-		PartnerCode: "",
+		Comment:     moynalog.CancelCommentMistake,
 	})
 	if err != nil {
-		log.Print(err)
+		return errors.Wrap(err, "cancel income")
 	}
 
-	fmt.Printf("Cancel income %+v, create income response: %+v", cancelIncome, resp)
+	fmt.Printf(
+		"Cancelled receipt %s at %s\n",
+		cancelled.ApprovedReceiptUUID,
+		cancelled.CancellationInfo.RegisterTime,
+	)
 
-	cancel()
+	return nil
 }
