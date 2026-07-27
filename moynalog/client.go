@@ -311,7 +311,7 @@ func (c *Client) newRequest(base *url.URL, method, urlStr string, body any) (*ht
 // must be a struct whose fields may contain "url" tags.
 func addOptions(s string, opts any) (string, error) {
 	v := reflect.ValueOf(opts)
-	if v.Kind() == reflect.Ptr && v.IsNil() {
+	if v.Kind() == reflect.Pointer && v.IsNil() {
 		return s, nil
 	}
 

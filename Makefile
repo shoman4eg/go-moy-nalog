@@ -1,5 +1,5 @@
 GO_MOD_NAME = github.com/shoman4eg/go-moy-nalog
-GOLANGCI_LINT_VERSION ?= v2.10.1
+GOLANGCI_LINT_VERSION ?= v2.12.2
 
 GREEN='\033[0;32m'
 NC='\033[0m'
