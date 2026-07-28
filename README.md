@@ -299,6 +299,38 @@ created, _, err := client.Income.Create(ctx, &moynalog.IncomeCreateRequest{
 })
 ```
 
+### Создать несколько чеков параллельно
+
+`*moynalog.Client` безопасен для конкурентного использования, поэтому один
+клиент можно гонять из нескольких горутин.
+
+```go
+import "golang.org/x/sync/errgroup"
+
+created := make([]*moynalog.IncomeCreated, len(requests))
+
+g, gctx := errgroup.WithContext(ctx)
+g.SetLimit(4) // не больше 4 запросов одновременно
+
+for i, request := range requests {
+    g.Go(func() error {
+        income, _, err := client.Income.Create(gctx, request)
+        if err != nil {
+            return fmt.Errorf("чек %d: %w", i, err)
+        }
+        created[i] = income
+
+        return nil
+    })
+}
+if err := g.Wait(); err != nil {
+    return err
+}
+```
+
+Создание чека не идемпотентно: если запрос упал по таймауту, чек мог всё равно
+зарегистрироваться — перед повтором сверьтесь через `client.Income.List`.
+
 ### Создать счёт на оплату (invoice)
 
 Счёт на оплату выставляется для оплаты по банковским реквизитам
